@@ -154,6 +154,3 @@ If the chain exists, the data exists.
 | Edge | 80+ | Full support |
 
 ---
-
-## License
-MIT
