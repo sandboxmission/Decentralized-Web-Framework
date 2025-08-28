@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Decentralized Web Framework (with Compression)</title>
+    <!-- Web3 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.8.2/web3.min.js"></script>
+    <!-- LZ-String for compression/decompression -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: #111;
+            padding: 20px;
+            border: 1px solid #333;
+        }
+        .status {
+            background: #222;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #333;
+            white-space: pre-line;
+        }
+        .content {
+            background: #000;
+            color: #fff;
+            padding: 20px;
+            margin: 10px 0;
+            border: 1px solid #333;
+            min-height: 200px;
+            font-family: sans-serif;
+        }
+        button {
+            background: #333;
+            color: #0f0;
+            border: 1px solid #666;
+            padding: 10px 15px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        button:hover { background: #444; }
+        button.danger {
+            background: #660000;
+            color: #ff6666;
+            border: 1px solid #990000;
+        }
+        button.danger:hover { background: #880000; }
+        .nav { display: flex; gap: 10px; margin: 20px 0; }
+        .nav button.active { background: #666; }
+        .muted { color: #8a8a8a; font-size: 12px; }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .row input[type="text"] { background: #111; color: #0f0; border: 1px solid #333; padding: 8px; }
+        .kpi { display:inline-block; padding:6px 10px; background:#090909; border:1px solid #2a2a2a; border-radius:6px; margin:4px 6px 0 0; font-size:12px; }
+        .badge { font-size: 11px; padding: 2px 6px; border:1px solid #2a2a2a; border-radius: 999px; background:#0a0a0a; }
+        .toggle { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+        .toggle input { accent-color:#0f0; }
+        textarea {
+            background:#111; color:#0f0; border:1px solid #333; padding:8px; width:100%; height:220px;
+        }
+        .delete-section {
+            background: #220000;
+            border: 1px solid #660000;
+            margin: 20px 0;
+            padding: 15px;
+        }
+        .warning {
+            color: #ff6666;
+            font-size: 14px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Decentralized Web Framework <span class="badge">LZB64</span></h1>
+        <div class="status" id="status">Ready</div>
+        <div class="row">
+            <button onclick="loadPage('home')">Load Home</button>
+            <button onclick="loadPage('about')">Load About</button>
+            <button onclick="loadPage('contact')">Load Contact</button>
+            <button onclick="showAdmin()">Admin</button>
+            <button onclick="showAllPages()">All Pages</button>
+        </div>
+        <div class="row" style="margin: 10px 0;">
+            <input type="text" id="searchPageId" placeholder="Search page..." />
+            <button onclick="searchPage()">Search</button>
+        </div>
+        <div class="content" id="content">Loading home page...</div>
+    </div>
+    <script>
+        // ====== Chain Config ======
+        const CONTRACT_ADDRESS = "0x9cf5A4A1fFce9c64908Fe357B2bd5B4fAE1d3Dd6";
+        const RPC_URL = "https://eth-sepolia.public.blastapi.io";
+        // ABI with delete function
+        const CONTRACT_ABI = [
+            {
+                inputs: [{ internalType: "string", name: "", type: "string" }],
+                name: "pages",
+                outputs: [{ internalType: "string", name: "", type: "string" }],
+                stateMutability: "view",
+                type: "function",
+            },
+            {
+                inputs: [
+                    { internalType: "string", name: "pageId", type: "string" },
+                    { internalType: "string", name: "content", type: "string" },
+                ],
+                name: "setPage",
+                outputs: [],
+                stateMutability: "nonpayable",
+                type: "function",
+            },
+            {
+                inputs: [],
+                name: "getAllPageIds",
+                outputs: [{ internalType: "string[]", name: "", type: "string[]" }],
+                stateMutability: "view",
+                type: "function",
+            },
+            {
+                inputs: [{ internalType: "string", name: "pageId", type: "string" }],
+                name: "deletePage",
+                outputs: [],
+                stateMutability: "nonpayable",
+                type: "function",
+            },
+        ];
+        // ====== Globals ======
+        let web3, contract;          // read-only
+        let web3Write, contractWrite; // write via MetaMask
+        let userAccount;
+        // Marker for compressed content
+        const LZ_PREFIX = "LZB64:"; // matches pattern from claudeETH.html
+        // ====== Helpers ======
+        function updateStatus(message) {
+            const s = document.getElementById('status');
+            s.textContent = message;
+            console.log(message);
+        }
+        function bytesOf(str) {
+            return new Blob([str]).size;
+        }
+        function toCompressed(html) {
+            const b64 = LZString.compressToBase64(html);
+            return LZ_PREFIX + b64;
+        }
+        function fromCompressed(maybeCompressed) {
+            if (typeof maybeCompressed !== 'string') return '';
+            if (maybeCompressed.startsWith(LZ_PREFIX)) {
+                const b64 = maybeCompressed.slice(LZ_PREFIX.length);
+                return LZString.decompressFromBase64(b64) || '';
+            }
+            // Fallback: uncompressed legacy content
+            return maybeCompressed;
+        }
+        function convertPlainTextToHTML(text) {
+            if (!text) return '';
+            const lines = text.split('\n');
+            let html = '';
+            let inList = false;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (line === '') { if (inList) { html += '</ul>\n'; inList = false; } continue; }
+                if (line.startsWith('- ') || line.startsWith('• ')) {
+                    if (!inList) { html += '<ul>\n'; inList = true; }
+                    html += `<li>${line.substring(2)}</li>\n`;
+                } else if (line.length < 60 && i < lines.length - 1 && lines[i + 1].trim() !== '') {
+                    if (inList) { html += '</ul>\n'; inList = false; }
+                    html += `<h3>${line}</h3>\n`;
+                } else {
+                    if (inList) { html += '</ul>\n'; inList = false; }
+                    html += `<p>${line}</p>\n`;
+                }
+            }
+            if (inList) html += '</ul>\n';
+            return html;
+        }
+        function wrapInLayout(content, pageId) {
+            return `
+                <div style="max-width: 800px; margin: 0 auto;">
+                    <div style="border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <h1 style="color: #0f0; margin: 0; text-transform: capitalize;">${pageId}</h1>
+                            <div style="font-size: 12px; color: #666;">
+                                <a href="#" onclick="showAdmin(); return false;" style="color: #0f0; text-decoration: none;">Edit</a>
+                                <span style="margin: 0 10px;">|</span>
+                                <a href="#" onclick="showAllPages(); return false;" style="color: #0f0; text-decoration: none;">All Pages</a>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="line-height: 1.6; color: #fff;">${content}</div>
+                    <div style="border-top: 1px solid #333; margin-top: 30px; padding-top: 15px; font-size: 12px; color: #666;">
+                        <p>Page: <strong>${pageId}</strong> | Stored on blockchain |
+                        <a href="#" onclick="loadPage('home'); return false;" style="color: #0f0;">Home</a></p>
+                    </div>
+                </div>`;
+        }
+        // ====== MetaMask ======
+        async function connectMetaMask() {
+            try {
+                if (!window.ethereum) throw new Error("MetaMask not installed");
+                updateStatus("Connecting MetaMask...");
+                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                userAccount = accounts[0];
+                web3Write = new Web3(window.ethereum);
+                const chainId = await web3Write.eth.getChainId();
+                if (chainId !== 11155111) {
+                    await window.ethereum.request({
+                        method: 'wallet_switchEthereumChain',
+                        params: [{ chainId: '0xaa36a7' }],
+                    });
+                }
+                contractWrite = new web3Write.eth.Contract(CONTRACT_ABI, CONTRACT_ADDRESS);
+                updateStatus(`MetaMask connected: ${userAccount.slice(0,6)}...${userAccount.slice(-4)}`);
+                const walletStatus = document.getElementById('walletStatus');
+                if (walletStatus) { 
+                    walletStatus.textContent = `Connected: ${userAccount.slice(0,6)}...${userAccount.slice(-4)}`; 
+                    walletStatus.style.color = '#0f0'; 
+                }
+            } catch (error) { 
+                updateStatus(`MetaMask error: ${error.message}`); 
+            }
+        }
+        // ====== Admin / Writing ======
+        async function updatePage() {
+            if (!contractWrite || !userAccount) { 
+                updateStatus("Connect MetaMask first!"); 
+                return; 
+            }
+            const pageId = document.getElementById('pageId').value.trim();
+            const plainContent = document.getElementById('pageContent').value.trim();
+            if (!pageId || !plainContent) { 
+                updateStatus("Page ID and content required!"); 
+                return; 
+            }
+            try {
+                updateStatus(`Formatting + compressing ${pageId}...`);
+                const htmlContent = convertPlainTextToHTML(plainContent);
+                const uncompressedBytes = bytesOf(htmlContent);
+                const payload = toCompressed(htmlContent);
+                const compressedBytes = bytesOf(payload);
+                updateStatus(`Saving ${pageId}...
+Uncompressed: ${uncompressedBytes} B | Stored (LZB64+prefix): ${compressedBytes} B`);
+                const tx = await contractWrite.methods.setPage(pageId, payload).send({ from: userAccount });
+                updateStatus(`${pageId} saved! TX: ${tx.transactionHash}`);
+                document.getElementById('pageId').value = '';
+                document.getElementById('pageContent').value = '';
+                setTimeout(() => loadPage(pageId), 1500);
+            } catch (error) {
+                updateStatus(`Update error: ${error.message}`);
+                console.error(error);
+            }
+        }
+        // ====== Delete Page Function ======
+        async function deletePage() {
+            if (!contractWrite || !userAccount) { 
+                updateStatus("Connect MetaMask first!"); 
+                return; 
+            }
+            const pageId = document.getElementById('deletePageId').value.trim();
+            if (!pageId) { 
+                updateStatus("Page ID required for deletion!"); 
+                return; 
+            }
+            
+            // Confirmation dialog
+            if (!confirm(`Are you sure you want to DELETE the page "${pageId}"?\n\nThis action CANNOT be undone and will permanently remove the page from the blockchain.`)) {
+                updateStatus("Delete cancelled");
+                return;
+            }
+            
+            try {
+                updateStatus(`Deleting page ${pageId}...`);
+                const tx = await contractWrite.methods.deletePage(pageId).send({ from: userAccount });
+                updateStatus(`Page ${pageId} deleted! TX: ${tx.transactionHash}`);
+                document.getElementById('deletePageId').value = '';
+                setTimeout(() => {
+                    updateStatus("Page deleted successfully");
+                    // Redirect to home if we're currently viewing the deleted page
+                    const currentContent = document.getElementById('content').innerHTML;
+                    if (currentContent.includes(`Page: <strong>${pageId}</strong>`)) {
+                        loadPage('home');
+                    }
+                }, 1500);
+            } catch (error) {
+                updateStatus(`Delete error: ${error.message}`);
+                console.error(error);
+            }
+        }
+        async function showAdmin() {
+            const adminContent = `
+                <h2>Admin Panel</h2>
+                <div style="margin: 20px 0;">
+                    <button onclick="connectMetaMask()">Connect MetaMask</button>
+                    <span id="walletStatus">Not connected</span>
+                </div>
+                <div style="padding: 15px; border: 1px solid #333; background: #222; margin: 20px 0;">
+                    <h3>Create/Update Page <span class="badge">compressed</span></h3>
+                    <input type="text" id="pageId" placeholder="Page ID (e.g. about)" style="background:#111;color:#0f0;border:1px solid #333;padding:8px;margin:5px;width:220px;" />
+                    <br />
+                    <textarea id="pageContent" placeholder="Write your content in plain text. Headings on their own line; blank line between paragraphs."></textarea>
+                    <div class="muted" id="sizeHint">Size shown on save (before/after compression).</div>
+                    <br />
+                    <button onclick="updatePage()">Save Page (compressed)</button>
+                </div>
+                <div class="delete-section">
+                    <h3>Delete Page <span class="badge" style="background:#660000;border-color:#990000;">danger</span></h3>
+                    <div class="warning">⚠️ Warning: Deleting a page is permanent and cannot be undone!</div>
+                    <input type="text" id="deletePageId" placeholder="Page ID to delete" style="background:#111;color:#ff6666;border:1px solid #660000;padding:8px;margin:5px;width:220px;" />
+                    <br />
+                    <button onclick="deletePage()" class="danger">Delete Page Permanently</button>
+                </div>
+                <div style="padding: 15px; border: 1px solid #333; background: #222; margin: 20px 0;">
+                    <h3>How to Write Content</h3>
+                    <p style="color: #aaa; font-size: 14px; margin: 10px 0;">
+                        • Plain text, no formatting needed<br />
+                        • Blank line = new paragraph<br />
+                        • Headings on their own line<br />
+                        • Bullet lists start with "- " or "• "<br />
+                        • Content is auto-formatted and stored compressed
+                    </p>
+                </div>
+                <div style="padding: 15px; border: 1px solid #333; background: #222;">
+                    <h3>Example Pages</h3>
+                    <button onclick="fillTemplate('about')">About Example</button>
+                    <button onclick="fillTemplate('contact')">Contact Example</button>
+                    <button onclick="fillTemplate('help')">Help Example</button>
+                </div>`;
+            const wrappedContent = wrapInLayout(adminContent, 'admin');
+            document.getElementById('content').innerHTML = wrappedContent;
+        }
+        function fillTemplate(type) {
+            const templates = {
+                about: {
+                    id: 'about',
+                    content: `About This Site
+This is a decentralized website powered by blockchain technology.
+What makes it special:
+- Content stored permanently on blockchain
+- No servers can shut it down
+- Community can contribute
+- Always available
+How it works:
+All content lives on the Ethereum blockchain. When you create a page, it gets stored forever in a smart contract.`,
+                },
+                contact: {
+                    id: 'contact',
+                    content: `Contact Information
+This website runs on blockchain technology.
+Technical Details:
+- Smart Contract Address: 0x9cf5...
+- Network: Ethereum Sepolia
+- No central server or company
+How to Contribute:
+Install MetaMask wallet and connect to Sepolia network. Then you can create and edit pages.`,
+                },
+                help: {
+                    id: 'help',
+                    content: `Help & How to Use
+Welcome! This site is easy to use.
+For Reading:
+- Click navigation buttons to browse
+- Use search to find specific pages
+- "All Pages" shows everything available
+For Writing:
+- Go to Admin panel
+- Connect your MetaMask wallet
+- Write content in plain text
+- Click Save Page
+Writing Tips:
+Write normally like an email or document. Put titles on their own lines. Press Enter twice for new paragraphs. The system handles all formatting automatically.`,
+                },
+            };
+            if (templates[type]) {
+                document.getElementById('pageId').value = templates[type].id;
+                document.getElementById('pageContent').value = templates[type].content;
+            }
+        }
+        // ====== Reading ======
+        async function ensureReadContract() {
+            if (!contract) {
+                web3 = new Web3(RPC_URL);
+                contract = new web3.eth.Contract(CONTRACT_ABI, CONTRACT_ADDRESS);
+            }
+        }
+        async function loadPage(pageId) {
+            try {
+                await ensureReadContract();
+                updateStatus(`Loading ${pageId}...`);
+                const stored = await contract.methods.pages(pageId).call();
+                if (stored && stored.trim().length > 0) {
+                    const html = fromCompressed(stored.trim());
+                    const wrapped = wrapInLayout(html, pageId);
+                    document.getElementById('content').innerHTML = wrapped;
+                    const origBytes = bytesOf(html);
+                    const storedBytes = bytesOf(stored);
+                    const mode = stored.startsWith(LZ_PREFIX) ? 'compressed' : 'plain';
+                    updateStatus(`${pageId} loaded (${mode}). Rendered: ${origBytes} B | Stored: ${storedBytes} B`);
+                } else {
+                    const empty = wrapInLayout(`
+                        <h1>Page Not Found</h1>
+                        <p>The page "${pageId}" does not exist yet.</p>
+                        <p>You can create it using the Admin panel.</p>
+                        <a href="#" onclick="showAdmin(); return false;">Create this page →</a>`, pageId);
+                    document.getElementById('content').innerHTML = empty;
+                    updateStatus(`${pageId} is empty`);
+                }
+            } catch (error) {
+                updateStatus(`Error loading ${pageId}: ${error.message}`);
+                const errorContent = wrapInLayout(`
+                    <h1>Error Loading Page</h1>
+                    <p>Could not load "${pageId}": ${error.message}</p>
+                    <p>Please check your connection and try again.</p>`, pageId);
+                document.getElementById('content').innerHTML = errorContent;
+                console.error(error);
+            }
+        }
+        async function showAllPages() {
+            try {
+                await ensureReadContract();
+                updateStatus("Loading all pages...");
+                const allPageIds = await contract.methods.getAllPageIds().call();
+                let content = `<h2>All Pages (${allPageIds.length} total)</h2>`;
+                if (allPageIds.length > 0) {
+                    content += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:20px 0;">`;
+                    for (const id of allPageIds) {
+                        const raw = await contract.methods.pages(id).call();
+                        const rendered = fromCompressed(raw);
+                        const storedLen = raw ? raw.length : 0;
+                        const renderedLen = rendered ? rendered.length : 0;
+                        const isCompressed = raw && raw.startsWith(LZ_PREFIX);
+                        content += `
+                            <div style="background:#222;border:1px solid #444;padding:15px;">
+                                <h3 style="color:#0f0;">${id}</h3>
+                                <div class="kpi">stored: ${storedLen} chars</div>
+                                <div class="kpi">rendered: ${renderedLen} chars</div>
+                                <div class="kpi">${isCompressed ? 'compressed' : 'plain'}</div>
+                                <button onclick="loadPage('${id}')" style="margin-top: 10px; width: 100%;">Load</button>
+                            </div>`;
+                    }
+                    content += `</div>`;
+                } else {
+                    content += `<p>No pages found.</p>`;
+                }
+                document.getElementById('content').innerHTML = content;
+                updateStatus(`Found ${allPageIds.length} pages`);
+            } catch (error) {
+                updateStatus(`V2 function not available: ${error.message}`);
+                document.getElementById('content').innerHTML = `
+                    <h2>Page Discovery</h2>
+                    <p>getAllPageIds() not available. Contract might be V1.</p>
+                    <p>Try these known pages:</p>
+                    <button onclick="loadPage('home')">Home</button>
+                    <button onclick="loadPage('about')">About</button>
+                    <button onclick="loadPage('contact')">Contact</button>`;
+            }
+        }
+        async function searchPage() {
+            const searchId = document.getElementById('searchPageId').value.trim();
+            if (!searchId) { updateStatus("Enter page ID"); return; }
+            await loadPage(searchId);
+        }
+        // ====== Auto-start ======
+        window.addEventListener('load', () => { loadPage('home'); });
+    </script>
+</body>
+</html>
