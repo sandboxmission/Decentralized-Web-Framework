@@ -1,0 +1,41 @@
+# Tools
+
+Collection of utility tools for blockchain development and interaction.
+
+## utf8-sender.html
+
+Simple browser-based tool for sending UTF-8 text messages directly to Ethereum blockchain via transaction data.
+
+### Features
+- Send any UTF-8 text as blockchain transaction data
+- MetaMask integration for wallet connectivity
+- Sepolia testnet support
+- Real-time gas estimation
+- No external dependencies beyond MetaMask
+
+### Use Cases
+- Testing blockchain messaging systems
+- Proof-of-concept for on-chain communication
+- Debugging transaction data handling
+- Educational demonstrations of blockchain data storage
+
+### Usage
+1. Open `utf8-sender.html` in any modern browser
+2. Connect MetaMask wallet
+3. Enter recipient address and message text
+4. Send transaction
+
+### Technical Details
+- Uses native browser TextEncoder for proper UTF-8 encoding
+- Converts text to hex format for transaction data field
+- Supports emoji and special characters
+- Transaction data is publicly readable on blockchain explorers
+
+### Requirements
+- MetaMask browser extension
+- Sepolia testnet ETH for gas fees
+- Modern browser (Chrome, Firefox, Safari, Edge)
+
+---
+
+*Note: All transaction data on public blockchains is permanently visible. Never include sensitive information in messages.*
